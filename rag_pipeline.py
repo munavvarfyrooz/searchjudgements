@@ -7,10 +7,8 @@ from langchain.vectorstores import FAISS
 from langchain.retrievers import BM25Retriever, EnsembleRetriever
 from langchain.docstore.document import Document
 from langchain.prompts import PromptTemplate
-from langchain.llms import HuggingFacePipeline
-from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+from langchain_openai import ChatOpenAI
 from tqdm import tqdm
-import torch
 from utils import get_pdf_paths, extract_text_from_pdf
 import multiprocessing as mp
 
@@ -18,7 +16,8 @@ import multiprocessing as mp
 CHUNK_SIZE = 800
 CHUNK_OVERLAP = 100
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-LLM_MODEL = "microsoft/phi-2"
+XAI_MODEL = "grok-4"  # Confirm the exact model name from xAI docs
+XAI_BASE_URL = "https://api.x.ai/v1"
 FAISS_INDEX_PATH = "./faiss_index/"
 PDF_DIR = "./judgements_pdfs/"
 BATCH_SIZE = 10
@@ -113,7 +112,7 @@ def hybrid_retrieve(query: str, vectorstore: FAISS, top_k: int = 10) -> List[Doc
 
 def query_rag(query: str, vectorstore: FAISS) -> Tuple[str, List[str]]:
     """
-    Query the RAG system and generate response using local LLM.
+    Query the RAG system and generate response using Grok API.
     
     Args:
         query (str): User query.
@@ -130,7 +129,7 @@ def query_rag(query: str, vectorstore: FAISS) -> Tuple[str, List[str]]:
         # Prompt template
         prompt_template = PromptTemplate(
             input_variables=["query", "context"],
-            template="""You are a legal expert summarizing judgements. Based on the following context, answer the query. 
+            template="""You are a legal expert summarizing judgements. Based on the following context, answer the query.
             Summarize key points, cite sources accurately, and avoid hallucinations. If information is insufficient, say so.
             
             Query: {query}
@@ -140,17 +139,20 @@ def query_rag(query: str, vectorstore: FAISS) -> Tuple[str, List[str]]:
             Response:"""
         )
         
-        # Load local LLM
-        tokenizer = AutoTokenizer.from_pretrained(LLM_MODEL)
-        model = AutoModelForCausalLM.from_pretrained(LLM_MODEL, trust_remote_code=True)
-        pipe = pipeline("text-generation", model=model, tokenizer=tokenizer, max_new_tokens=200, device=0 if torch.cuda.is_available() else -1)
-        llm = HuggingFacePipeline(pipeline=pipe)
+        # Load xAI Grok LLM using OpenAI-compatible interface
+        llm = ChatOpenAI(
+            model_name=XAI_MODEL,
+            temperature=0.3,
+            max_tokens=300,
+            base_url=XAI_BASE_URL,
+            api_key=os.getenv("XAI_API_KEY")
+        )
         
         # Generate response
         prompt = prompt_template.format(query=query, context=context_text)
-        response = llm(prompt)
+        response = llm.invoke(prompt).content
         
         return response, sources
     except Exception as e:
         print(f"Error querying RAG: {e}")
-        return "An error occurred.", []
+        return f"An error occurred: {str(e)}", []
