@@ -1,0 +1,34 @@
+# Virtual environment
+venv/
+env/
+
+# PDF files
+judgements_pdfs/
+*.pdf
+
+# FAISS index
+faiss_index/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
