@@ -1,16 +1,23 @@
 import os
 import json
-from typing import List, Tuple
+import logging
+from typing import List, Tuple, Union
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.embeddings import HuggingFaceEmbeddings
-from langchain.vectorstores import FAISS
-from langchain.retrievers import BM25Retriever, EnsembleRetriever
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.vectorstores import FAISS
+from langchain_community.retrievers import BM25Retriever
+from langchain.retrievers import EnsembleRetriever
 from langchain.docstore.document import Document
 from langchain.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
 from tqdm import tqdm
 from utils import get_pdf_paths, extract_text_from_pdf
 import multiprocessing as mp
+import concurrent.futures
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Constants
 CHUNK_SIZE = 800
@@ -21,59 +28,93 @@ XAI_BASE_URL = "https://api.x.ai/v1"
 FAISS_INDEX_PATH = "./faiss_index/"
 PDF_DIR = "./judgements_pdfs/"
 BATCH_SIZE = 10
+PROCESS_TIMEOUT = 300  # 5 minutes timeout for processing each PDF
 
-def build_index(pdf_dir: str = PDF_DIR, faiss_path: str = FAISS_INDEX_PATH) -> None:
+def build_index(pdf_input: Union[str, List[str]] = PDF_DIR, faiss_path: str = FAISS_INDEX_PATH) -> None:
     """
-    Build the FAISS index from PDFs in the given directory.
+    Build the FAISS index from PDFs in the given directory or list of paths.
     Ingests in batches with multiprocessing for efficiency.
     
     Args:
-        pdf_dir (str): Directory containing PDFs.
+        pdf_input (Union[str, List[str]]): Directory containing PDFs or list of PDF paths.
         faiss_path (str): Path to save FAISS index.
     """
     try:
-        pdf_paths = get_pdf_paths(pdf_dir)
+        if isinstance(pdf_input, str):
+            pdf_paths = get_pdf_paths(pdf_input)
+        elif isinstance(pdf_input, list):
+            pdf_paths = [p for p in pdf_input if os.path.isfile(p) and p.lower().endswith('.pdf')]
+        else:
+            raise ValueError("pdf_input must be str (directory) or List[str] (paths)")
+        
         if not pdf_paths:
-            raise ValueError(f"No PDFs found in {pdf_dir}")
-            
+            raise ValueError(f"No PDFs found in {pdf_input}")
+        
+        logger.info(f"Found {len(pdf_paths)} PDFs to process")
+        
         embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
         vectorstore = None
         num_cores = mp.cpu_count()
-        pool = mp.Pool(processes=num_cores)
+        with mp.Pool(processes=num_cores) as pool:
+            for batch_start in range(0, len(pdf_paths), BATCH_SIZE):
+                batch = pdf_paths[batch_start:batch_start + BATCH_SIZE]
+                with tqdm(total=len(batch), desc="Processing PDF batch") as pbar:
+                    results = []
+                    for pdf in batch:
+                        results.append(pool.apply_async(_process_pdf, (pdf,), callback=lambda x: pbar.update(1), error_callback=lambda e: logger.error(f"Error processing {pdf}: {e}")))
+                    documents = []
+                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                        future_to_res = {executor.submit(res.get, timeout=PROCESS_TIMEOUT): res for res in results}
+                        for future in concurrent.futures.as_completed(future_to_res):
+                            try:
+                                documents.extend(future.result())
+                            except concurrent.futures.TimeoutError:
+                                logger.error(f"Timeout processing PDF")
+                            except Exception as e:
+                                logger.error(f"Error in batch processing: {e}")
+                if not documents:
+                    logger.warning("No documents processed in this batch")
+                    continue
+                
+                if vectorstore is None:
+                    vectorstore = FAISS.from_documents(documents, embeddings)
+                else:
+                    vectorstore.add_documents(documents)
+                logger.info(f"Added {len(documents)} chunks to vectorstore")
         
-        for batch_start in range(0, len(pdf_paths), BATCH_SIZE):
-            batch = pdf_paths[batch_start:batch_start + BATCH_SIZE]
-            with tqdm(total=len(batch), desc="Processing PDF batch") as pbar:
-                results = []
-                for pdf in batch:
-                    results.append(pool.apply_async(_process_pdf, (pdf,), callback=lambda x: pbar.update(1)))
-                documents = []
-                for res in results:
-                    documents.extend(res.get())
-            if vectorstore is None:
-                vectorstore = FAISS.from_documents(documents, embeddings)
-            else:
-                vectorstore.add_documents(documents)
-        pool.close()
-        pool.join()
+        if vectorstore is None:
+            raise ValueError("No documents were processed - vectorstore is None")
+        
         vectorstore.save_local(faiss_path)
-        print(f"FAISS index saved to {faiss_path}")
+        logger.info(f"FAISS index saved to {faiss_path}")
     except Exception as e:
-        print(f"Error building index: {e}")
+        logger.error(f"Error building index: {e}")
+        raise
+
 def _process_pdf(pdf_path: str) -> List[Document]:
     """Helper function for multiprocessing PDF processing."""
-    text = extract_text_from_pdf(pdf_path)
-    splitter = RecursiveCharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
-    chunks = splitter.split_text(text)
-    return [Document(page_content=chunk, metadata={"source": pdf_path}) for chunk in chunks]
+    try:
+        text = extract_text_from_pdf(pdf_path)
+        if not text.strip():
+            logger.warning(f"Empty text extracted from {pdf_path}")
+            return []
+        splitter = RecursiveCharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
+        chunks = splitter.split_text(text)
+        return [Document(page_content=chunk, metadata={"source": pdf_path}) for chunk in chunks]
+    except Exception as e:
+        logger.error(f"Error processing PDF {pdf_path}: {e}")
+        return []
 
 def load_vectorstore(faiss_path: str = FAISS_INDEX_PATH) -> FAISS:
     """Load existing FAISS vectorstore."""
     try:
+        if not os.path.exists(faiss_path):
+            raise FileNotFoundError(f"FAISS index not found at {faiss_path}. Please build the index first.")
         embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
         return FAISS.load_local(faiss_path, embeddings, allow_dangerous_deserialization=True)
     except Exception as e:
-        raise ValueError(f"Error loading FAISS index from {faiss_path}: {e}")
+        logger.error(f"Error loading FAISS index from {faiss_path}: {e}")
+        raise
 
 def hybrid_retrieve(query: str, vectorstore: FAISS, top_k: int = 10) -> List[Document]:
     """
@@ -88,11 +129,19 @@ def hybrid_retrieve(query: str, vectorstore: FAISS, top_k: int = 10) -> List[Doc
         List[Document]: Reranked relevant documents.
     """
     try:
+        if vectorstore is None:
+            logger.warning("Vectorstore is None - returning empty list")
+            return []
+        
         # Semantic retriever
         semantic_retriever = vectorstore.as_retriever(search_kwargs={"k": top_k * 2})
         
         # BM25 retriever
-        bm25_retriever = BM25Retriever.from_documents(vectorstore.docstore.values())
+        docs = list(vectorstore.docstore.values())
+        if not docs:
+            logger.warning("Docstore is empty - returning empty list")
+            return []
+        bm25_retriever = BM25Retriever.from_documents(docs)
         bm25_retriever.k = top_k * 2
         
         # Ensemble
@@ -103,16 +152,16 @@ def hybrid_retrieve(query: str, vectorstore: FAISS, top_k: int = 10) -> List[Doc
         
         # Retrieve and rerank (simple score-based rerank)
         results = ensemble_retriever.get_relevant_documents(query)
-        # Rerank by ensemble score (assuming scores are available; fallback to sorting by metadata if needed)
+        logger.info(f"Retrieved {len(results)} documents for query")
         results.sort(key=lambda x: x.metadata.get('relevance_score', 0), reverse=True)
         return results[:top_k]
     except Exception as e:
-        print(f"Error in hybrid retrieval: {e}")
+        logger.error(f"Error in hybrid retrieval: {e}")
         return []
 
 def query_rag(query: str, vectorstore: FAISS) -> Tuple[str, List[str]]:
     """
-    Query the RAG system and generate response using Grok API.
+    Query the RAG system and generate response using xAI Grok API.
     
     Args:
         query (str): User query.
@@ -122,14 +171,22 @@ def query_rag(query: str, vectorstore: FAISS) -> Tuple[str, List[str]]:
         Tuple[str, List[str]]: Generated response and list of sources.
     """
     try:
+        api_key = os.getenv("XAI_API_KEY")
+        if not api_key:
+            raise ValueError("XAI_API_KEY environment variable not set")
+        
         contexts = hybrid_retrieve(query, vectorstore)
+        if not contexts:
+            logger.warning("No contexts retrieved - returning insufficient info message")
+            return "No relevant documents found for the query. Please try a different search term or add more PDFs.", []
+        
         context_text = "\n\n".join([doc.page_content for doc in contexts])
         sources = [doc.metadata["source"] for doc in contexts]
         
         # Prompt template
         prompt_template = PromptTemplate(
             input_variables=["query", "context"],
-            template="""You are a legal expert summarizing judgements. Based on the following context, answer the query.
+            template="""You are a legal expert summarizing judgements. Based on the following context, answer the query. 
             Summarize key points, cite sources accurately, and avoid hallucinations. If information is insufficient, say so.
             
             Query: {query}
@@ -145,7 +202,7 @@ def query_rag(query: str, vectorstore: FAISS) -> Tuple[str, List[str]]:
             temperature=0.3,
             max_tokens=300,
             base_url=XAI_BASE_URL,
-            api_key=os.getenv("XAI_API_KEY")
+            api_key=api_key
         )
         
         # Generate response
@@ -154,5 +211,5 @@ def query_rag(query: str, vectorstore: FAISS) -> Tuple[str, List[str]]:
         
         return response, sources
     except Exception as e:
-        print(f"Error querying RAG: {e}")
+        logger.error(f"Error querying RAG: {e}")
         return f"An error occurred: {str(e)}", []
