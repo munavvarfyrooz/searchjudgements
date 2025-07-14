@@ -201,7 +201,6 @@ def query_rag(query: str, vectorstore: FAISS) -> Tuple[str, List[str]]:
             model=XAI_MODEL,
             temperature=0.2,  # Low for factual summaries
             max_tokens=1024,  # Limit to ensure output
-            reasoning_effort="none",  # Key fix: Disable reasoning to avoid empty content
             top_p=0.9,
             stream=False
         )
