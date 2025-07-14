@@ -9,7 +9,7 @@ from langchain_community.retrievers import BM25Retriever
 from langchain.retrievers import EnsembleRetriever
 from langchain.docstore.document import Document
 from langchain.prompts import PromptTemplate
-from langchain_openai import ChatOpenAI
+from langchain_xai import ChatXAI
 from tqdm import tqdm
 from utils import get_pdf_paths, extract_text_from_pdf
 import multiprocessing as mp
@@ -23,8 +23,7 @@ logger = logging.getLogger(__name__)
 CHUNK_SIZE = 800
 CHUNK_OVERLAP = 100
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-XAI_MODEL = "grok-4"  # Confirm the exact model name from xAI docs
-XAI_BASE_URL = "https://api.x.ai/v1"
+XAI_MODEL = "grok-beta"  # Updated model name for ChatXAI
 FAISS_INDEX_PATH = "./faiss_index/"
 PDF_DIR = "./judgements_pdfs/"
 BATCH_SIZE = 10
@@ -196,13 +195,15 @@ def query_rag(query: str, vectorstore: FAISS) -> Tuple[str, List[str]]:
             Response:"""
         )
         
-        # Load xAI Grok LLM using OpenAI-compatible interface
-        llm = ChatOpenAI(
-            model_name=XAI_MODEL,
-            temperature=0.3,
-            max_tokens=300,
-            base_url=XAI_BASE_URL,
-            api_key=api_key
+        # Load xAI Grok LLM using native ChatXAI wrapper
+        llm = ChatXAI(
+            api_key=api_key,
+            model=XAI_MODEL,
+            temperature=0.2,  # Low for factual summaries
+            max_tokens=1024,  # Limit to ensure output
+            reasoning_effort="none",  # Key fix: Disable reasoning to avoid empty content
+            top_p=0.9,
+            stream=False
         )
         
         # Generate response
