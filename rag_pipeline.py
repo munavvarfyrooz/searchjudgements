@@ -7,6 +7,7 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_community.retrievers import BM25Retriever
 from langchain.retrievers import EnsembleRetriever
+from langchain.chains import RetrievalQA
 from langchain.docstore.document import Document
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain.prompts import PromptTemplate
@@ -182,58 +183,55 @@ def hybrid_retrieve(query: str, vectorstore: FAISS, top_k: int = 4) -> List[Docu
         return []
 
 def query_rag(query: str, vectorstore: FAISS) -> Tuple[str, List[str]]:
-    """
-    Query the RAG system and generate response using xAI Grok API.
-    
-    Args:
-        query (str): User query.
-        vectorstore (FAISS): Loaded vectorstore.
-    
-    Returns:
-        Tuple[str, List[str]]: Generated response and list of sources.
-    """
+    """Query the RAG system."""
     try:
         api_key = os.getenv("XAI_API_KEY")
         if not api_key:
             raise ValueError("XAI_API_KEY environment variable not set")
         
-        contexts = hybrid_retrieve(query, vectorstore)
-        if not contexts:
-            logger.warning("No contexts retrieved - returning insufficient info message")
-            return "No relevant documents found for the query. Please try a different search term or add more PDFs.", []
-        
-        context_text = "\n\n".join([doc.page_content for doc in contexts])
-        sources = [doc.metadata["source"] for doc in contexts]
-        
-        # Load xAI Grok LLM using native ChatXAI wrapper
         llm = ChatXAI(
             api_key=api_key,
             model=XAI_MODEL,
-            temperature=0.0,  # Deterministic for factual responses
-            max_tokens=4096,  # Increased to ensure complete output
+            temperature=0.0,
+            max_tokens=4096,
             top_p=1.0,
             stream=False
         )
         
-        # Generate response with structured messages
-        system_prompt = "You are a legal expert summarizing judgements. Based on the provided context, answer the query. Summarize key points, cite sources accurately, and avoid hallucinations. If information is insufficient, say so."
-        human_prompt = f"Query: {query}\n\nContext: {context_text}\n\nResponse:"
+        PROMPT = PromptTemplate(
+            input_variables=["query", "context"],
+            template="""You are a legal expert summarizing judgements. Based on the following context, answer the query.
+Summarize key points, cite sources accurately, and avoid hallucinations. If information is insufficient, say so.
+            
+Query: {query}
+            
+Context: {context}
+            
+Response:"""
+        )
         
-        messages = [
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=human_prompt)
-        ]
+        retriever = vectorstore.as_retriever(search_kwargs={"k": 20})  # Increased from 12 to 20 for more documents
+        qa_chain = RetrievalQA.from_chain_type(
+            llm=llm,
+            chain_type="stuff",
+            retriever=retriever,
+            return_source_documents=True,
+            chain_type_kwargs={"prompt": PROMPT}
+        )
         
-        logger.info(f"Generated messages (system: {system_prompt[:200]}..., human: {human_prompt[:200]}...)")
-        invocation_result = llm.invoke(messages)
-        logger.info(f"LLM invocation result type: {type(invocation_result)}")
-        logger.info(f"LLM invocation result: {str(invocation_result)[:200]}...")
-        response = invocation_result.content if hasattr(invocation_result, 'content') else str(invocation_result)
-        if not response.strip():
+        result = qa_chain({"query": query})
+        logger.info(f"Retrieved {len(result['source_documents'])} documents for query")
+        logger.info(f"Generated prompt (first 200 chars): {PROMPT.template[:200]}...")
+        
+        # Enhanced response handling for empty content
+        response = result['result']
+        if not response:
             logger.warning("LLM returned empty response")
-            response = "The model generated an empty response. This may be due to insufficient context or API issues. Please try rephrasing the query."
+            if hasattr(result, 'additional_kwargs') and 'reasoning_content' in result.additional_kwargs:
+                response = result.additional_kwargs['reasoning_content']
+                logger.info("Falling back to reasoning_content")
         
-        return response, sources
+        return response, [doc.metadata["source"] for doc in result['source_documents']]
     except Exception as e:
-        logger.error(f"Error querying RAG: {e}")
-        return f"An error occurred: {str(e)}", []
+        logger.error(f"Error in query_rag: {e}")
+        return "", []
