@@ -23,7 +23,7 @@ def main():
     if st.button("Build Index"):
         with st.spinner("Building index... This may take a while."):
             try:
-                build_index(pdf_dir=pdf_dir, faiss_path=DEFAULT_FAISS_PATH)
+                build_index(pdf_input=pdf_dir, faiss_path=DEFAULT_FAISS_PATH)
                 st.success("Index built successfully!")
             except Exception as e:
                 st.error(f"Error building index: {e}")
