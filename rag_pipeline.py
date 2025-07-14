@@ -8,12 +8,14 @@ from langchain_community.vectorstores import FAISS
 from langchain_community.retrievers import BM25Retriever
 from langchain.retrievers import EnsembleRetriever
 from langchain.docstore.document import Document
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain.prompts import PromptTemplate
 from langchain_xai import ChatXAI
 from tqdm import tqdm
 from utils import get_pdf_paths, extract_text_from_pdf
 import multiprocessing as mp
 import concurrent.futures
+import pickle
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -24,6 +26,7 @@ CHUNK_SIZE = 800
 CHUNK_OVERLAP = 100
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 XAI_MODEL = "grok-4"  # Valid xAI model name
+BM25_INDEX_PATH = "bm25_index.pkl"
 FAISS_INDEX_PATH = "./faiss_index/"
 PDF_DIR = "./judgements_pdfs/"
 BATCH_SIZE = 10
@@ -86,6 +89,16 @@ def build_index(pdf_input: Union[str, List[str]] = PDF_DIR, faiss_path: str = FA
         
         vectorstore.save_local(faiss_path)
         logger.info(f"FAISS index saved to {faiss_path}")
+        
+        # Create and save BM25 index for fast querying
+        docs = list(vectorstore.docstore._dict.values())
+        if docs:
+            bm25_retriever = BM25Retriever.from_documents(docs)
+            with open(BM25_INDEX_PATH, "wb") as f:
+                pickle.dump(bm25_retriever, f)
+            logger.info(f"BM25 index saved to {BM25_INDEX_PATH}")
+        else:
+            logger.warning("No documents to create BM25 index")
     except Exception as e:
         logger.error(f"Error building index: {e}")
         raise
@@ -115,7 +128,7 @@ def load_vectorstore(faiss_path: str = FAISS_INDEX_PATH) -> FAISS:
         logger.error(f"Error loading FAISS index from {faiss_path}: {e}")
         raise
 
-def hybrid_retrieve(query: str, vectorstore: FAISS, top_k: int = 10) -> List[Document]:
+def hybrid_retrieve(query: str, vectorstore: FAISS, top_k: int = 4) -> List[Document]:
     """
     Hybrid retrieval: semantic + BM25, rerank top results.
     
@@ -135,13 +148,23 @@ def hybrid_retrieve(query: str, vectorstore: FAISS, top_k: int = 10) -> List[Doc
         # Semantic retriever
         semantic_retriever = vectorstore.as_retriever(search_kwargs={"k": top_k * 2})
         
-        # BM25 retriever
-        docs = list(vectorstore.docstore._dict.values())
-        if not docs:
-            logger.warning("Docstore is empty - returning empty list")
-            return []
-        bm25_retriever = BM25Retriever.from_documents(docs)
-        bm25_retriever.k = top_k * 2
+        # BM25 retriever - load precomputed index
+        try:
+            with open(BM25_INDEX_PATH, "rb") as f:
+                bm25_retriever = pickle.load(f)
+            bm25_retriever.k = top_k * 2
+            logger.info("Loaded precomputed BM25 index")
+        except FileNotFoundError:
+            logger.warning("BM25 index not found, creating on the fly")
+            docs = list(vectorstore.docstore._dict.values())
+            if not docs:
+                logger.warning("Docstore is empty - returning empty list")
+                return []
+            bm25_retriever = BM25Retriever.from_documents(docs)
+            bm25_retriever.k = top_k * 2
+            with open(BM25_INDEX_PATH, "wb") as f:
+                pickle.dump(bm25_retriever, f)
+            logger.info(f"BM25 index created and saved to {BM25_INDEX_PATH}")
         
         # Ensemble
         ensemble_retriever = EnsembleRetriever(
@@ -150,7 +173,7 @@ def hybrid_retrieve(query: str, vectorstore: FAISS, top_k: int = 10) -> List[Doc
         )
         
         # Retrieve and rerank (simple score-based rerank)
-        results = ensemble_retriever.get_relevant_documents(query)
+        results = ensemble_retriever.invoke(query)
         logger.info(f"Retrieved {len(results)} documents for query")
         results.sort(key=lambda x: x.metadata.get('relevance_score', 0), reverse=True)
         return results[:top_k]
@@ -182,33 +205,27 @@ def query_rag(query: str, vectorstore: FAISS) -> Tuple[str, List[str]]:
         context_text = "\n\n".join([doc.page_content for doc in contexts])
         sources = [doc.metadata["source"] for doc in contexts]
         
-        # Prompt template
-        prompt_template = PromptTemplate(
-            input_variables=["query", "context"],
-            template="""You are a legal expert summarizing judgements. Based on the following context, answer the query. 
-            Summarize key points, cite sources accurately, and avoid hallucinations. If information is insufficient, say so.
-            
-            Query: {query}
-            
-            Context: {context}
-            
-            Response:"""
-        )
-        
         # Load xAI Grok LLM using native ChatXAI wrapper
         llm = ChatXAI(
             api_key=api_key,
             model=XAI_MODEL,
-            temperature=0.2,  # Low for factual summaries
-            max_tokens=1024,  # Limit to ensure output
-            top_p=0.9,
+            temperature=0.0,  # Deterministic for factual responses
+            max_tokens=4096,  # Increased to ensure complete output
+            top_p=1.0,
             stream=False
         )
         
-        # Generate response
-        prompt = prompt_template.format(query=query, context=context_text)
-        logger.info(f"Generated prompt (first 200 chars): {prompt[:200]}...")
-        invocation_result = llm.invoke(prompt)
+        # Generate response with structured messages
+        system_prompt = "You are a legal expert summarizing judgements. Based on the provided context, answer the query. Summarize key points, cite sources accurately, and avoid hallucinations. If information is insufficient, say so."
+        human_prompt = f"Query: {query}\n\nContext: {context_text}\n\nResponse:"
+        
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=human_prompt)
+        ]
+        
+        logger.info(f"Generated messages (system: {system_prompt[:200]}..., human: {human_prompt[:200]}...)")
+        invocation_result = llm.invoke(messages)
         logger.info(f"LLM invocation result type: {type(invocation_result)}")
         logger.info(f"LLM invocation result: {str(invocation_result)[:200]}...")
         response = invocation_result.content if hasattr(invocation_result, 'content') else str(invocation_result)
