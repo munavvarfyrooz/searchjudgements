@@ -137,7 +137,7 @@ def hybrid_retrieve(query: str, vectorstore: FAISS, top_k: int = 10) -> List[Doc
         semantic_retriever = vectorstore.as_retriever(search_kwargs={"k": top_k * 2})
         
         # BM25 retriever
-        docs = list(vectorstore.docstore.values())
+        docs = list(vectorstore.docstore._dict.values())
         if not docs:
             logger.warning("Docstore is empty - returning empty list")
             return []
