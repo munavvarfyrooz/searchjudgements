@@ -199,11 +199,11 @@ def query_rag(query: str, vectorstore: FAISS) -> Tuple[str, List[str]]:
         )
         
         PROMPT = PromptTemplate(
-            input_variables=["query", "context"],
+            input_variables=["question", "context"],
             template="""You are a legal expert summarizing judgements. Based on the following context, answer the query.
 Summarize key points, cite sources accurately, and avoid hallucinations. If information is insufficient, say so.
             
-Query: {query}
+Query: {question}
             
 Context: {context}
             
@@ -219,7 +219,7 @@ Response:"""
             chain_type_kwargs={"prompt": PROMPT}
         )
         
-        result = qa_chain({"query": query})
+        result = qa_chain({"question": query})
         logger.info(f"Retrieved {len(result['source_documents'])} documents for query")
         logger.info(f"Generated prompt (first 200 chars): {PROMPT.template[:200]}...")
         
