@@ -207,7 +207,14 @@ def query_rag(query: str, vectorstore: FAISS) -> Tuple[str, List[str]]:
         
         # Generate response
         prompt = prompt_template.format(query=query, context=context_text)
-        response = llm.invoke(prompt).content
+        logger.info(f"Generated prompt (first 200 chars): {prompt[:200]}...")
+        invocation_result = llm.invoke(prompt)
+        logger.info(f"LLM invocation result type: {type(invocation_result)}")
+        logger.info(f"LLM invocation result: {str(invocation_result)[:200]}...")
+        response = invocation_result.content if hasattr(invocation_result, 'content') else str(invocation_result)
+        if not response.strip():
+            logger.warning("LLM returned empty response")
+            response = "The model generated an empty response. This may be due to insufficient context or API issues. Please try rephrasing the query."
         
         return response, sources
     except Exception as e:
