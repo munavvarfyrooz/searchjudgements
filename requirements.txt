@@ -13,3 +13,4 @@ requests==2.32.3  # For API calls if needed
 langchain==0.3.26
 langchain-community==0.3.27
 langchain-xai==0.2.4
+langchain-huggingface==0.0.3  # For updated HuggingFaceEmbeddings to fix deprecation
