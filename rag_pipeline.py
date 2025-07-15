@@ -203,8 +203,7 @@ def query_rag(query: str, vectorstore: FAISS) -> Tuple[str, List[str]]:
         
         PROMPT = PromptTemplate(
             input_variables=["context"],
-            template=f"""You are a legal expert summarizing judgements. Based on the following context, answer the query.
-Summarize key points, cite sources accurately, and avoid hallucinations. If information is insufficient, say so.
+            template=f"""Answer the following query using ONLY the information from the provided context. Do not add, infer, or use any knowledge outside of what is explicitly stated in the context. If the context does not provide sufficient information to answer the query, reply EXACTLY with: "Insufficient information in the provided context to answer the query." Do not explain, do not add notes, do not mention any other cases or knowledge.
             
 Query: {query}
             
