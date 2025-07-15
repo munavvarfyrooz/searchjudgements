@@ -14,3 +14,4 @@ langchain==0.3.26  # Or upgrade to latest: langchain==0.3.38 (as of July 2025, c
 langchain-community==0.3.27  # Or upgrade to latest: langchain-community==0.3.39
 langchain-xai==0.2.4  # Or upgrade to latest if available, but 0.2.4 is recent
 langchain-huggingface==0.3.0  # Latest version, compatible with langchain-core >=0.3.x
+transformers==4.42.3  # Update for legal-bert compatibility

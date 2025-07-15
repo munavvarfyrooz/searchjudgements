@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # Constants
 CHUNK_SIZE = 800
 CHUNK_OVERLAP = 100
-EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+EMBEDDING_MODEL = "nlpaueb/legal-bert-base-uncased"  # Legal-specific embeddings for better query efficiency
 XAI_MODEL = "grok-4"  # Valid xAI model name
 BM25_INDEX_PATH = "bm25_index.pkl"
 FAISS_INDEX_PATH = "./faiss_index/"
