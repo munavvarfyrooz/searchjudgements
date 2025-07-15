@@ -20,6 +20,8 @@ import concurrent.futures
 import pickle
 
 # Setup logging
+from dotenv import load_dotenv
+load_dotenv()  # Load environment variables from .env file
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -259,5 +261,6 @@ Response:"""
         
         return response, [doc.metadata["source"] for doc in result['source_documents']]
     except Exception as e:
-        logger.error(f"Error in query_rag: {e}")
+        import traceback
+        logger.error(f"Error in query_rag: {e}\n{traceback.format_exc()}")
         return "", []
