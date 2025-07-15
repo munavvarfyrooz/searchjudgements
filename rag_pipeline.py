@@ -199,20 +199,47 @@ def query_rag(query: str, vectorstore: FAISS) -> Tuple[str, List[str]]:
         )
         
         PROMPT = PromptTemplate(
-            input_variables=["context"],
+            input_variables=["query", "context"],
             template="""You are a legal expert summarizing judgements. Based on the following context, answer the query.
 Summarize key points, cite sources accurately, and avoid hallucinations. If information is insufficient, say so.
+            
+Query: {query}
             
 Context: {context}
             
 Response:"""
         )
         
-        retriever = vectorstore.as_retriever(search_kwargs={"k": 20})  # Increased from 12 to 20 for more documents
+        # Create hybrid retriever
+        semantic_retriever = vectorstore.as_retriever(search_kwargs={"k": 20})
+        
+        # BM25 retriever - load or create
+        try:
+            with open(BM25_INDEX_PATH, "rb") as f:
+                bm25_retriever = pickle.load(f)
+            bm25_retriever.k = 20
+            logger.info("Loaded precomputed BM25 index")
+        except FileNotFoundError:
+            logger.warning("BM25 index not found, creating on the fly")
+            docs = list(vectorstore.docstore._dict.values())
+            if not docs:
+                logger.warning("Docstore is empty - returning empty list")
+                return "", []
+            bm25_retriever = BM25Retriever.from_documents(docs)
+            bm25_retriever.k = 20
+            with open(BM25_INDEX_PATH, "wb") as f:
+                pickle.dump(bm25_retriever, f)
+            logger.info(f"BM25 index created and saved to {BM25_INDEX_PATH}")
+        
+        ensemble_retriever = EnsembleRetriever(
+            retrievers=[semantic_retriever, bm25_retriever],
+            weights=[0.5, 0.5]
+        )
+        
         qa_chain = RetrievalQA.from_chain_type(
             llm=llm,
             chain_type="stuff",
-            retriever=retriever,
+            retriever=ensemble_retriever,
             return_source_documents=True,
             chain_type_kwargs={"prompt": PROMPT}
         )
