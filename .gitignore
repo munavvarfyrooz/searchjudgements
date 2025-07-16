@@ -31,4 +31,5 @@ Thumbs.db
 
 # Temporary files
 *.tmp
-*.temp
+*.tempraw_dataset/
+raw_dataset.zip
