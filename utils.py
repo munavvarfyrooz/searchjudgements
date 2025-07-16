@@ -48,7 +48,9 @@ def extract_text_from_pdf(pdf_path: str) -> str:
                     try:
                         # Convert page to image
                         page_image = page.to_image(resolution=300).original
-                        ocr_text = pytesseract.image_to_string(page_image, lang='eng')
+                        # Improved OCR with custom config for better accuracy
+                        custom_config = r'--oem 3 --psm 3'
+                        ocr_text = pytesseract.image_to_string(page_image, lang='eng', config=custom_config)
                         text += ocr_text + "\n\n"
                     except Exception as ocr_error:
                         print(f"OCR error on page {page.page_number} of {pdf_path}: {ocr_error}")
